@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Webapp Code and Project Files — Binaural Beat Generator</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 20px;
+      background-color: #f5f5f5;
+    }
+
+    /* Top nav (same style as app) */
+    .top-nav {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .nav-item {
+      background-color: white;
+      border-radius: 10px;
+      padding: 12px 14px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+      text-align: center;
+      font-weight: bold;
+    }
+    .nav-item a {
+      text-decoration: none;
+      color: #1e88e5;
+    }
+    .nav-item a:hover { text-decoration: underline; }
+    .nav-item.current { color: #111; }
+
+    h1 {
+      color: #333;
+      text-align: center;
+      margin-top: 10px;
+      margin-bottom: 10px;
+    }
+
+    .section {
+      background-color: white;
+      padding: 20px;
+      margin: 16px 0;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .section h2 {
+      color: #555;
+      margin-top: 0;
+      font-size: 18px;
+    }
+
+    .info {
+      background-color: #e7f3ff;
+      padding: 15px;
+      border-left: 4px solid #2196F3;
+      margin-top: 14px;
+      border-radius: 4px;
+      line-height: 1.6;
+    }
+
+    .download-wrap {
+      display: flex;
+      justify-content: center;
+      margin-top: 10px;
+    }
+    .download-btn {
+      display: inline-block;
+      padding: 16px 22px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 18px;
+      font-weight: bold;
+      text-decoration: none;
+      text-align: center;
+      min-width: 260px;
+    }
+    .download-btn:hover { background-color: #45a049; }
+
+    pre {
+      background: #0b1020;
+      color: #e6edf3;
+      padding: 16px;
+      border-radius: 8px;
+      overflow: auto;
+      line-height: 1.4;
+      font-size: 12px;
+    }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+
+    .note {
+      color: #444;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 980px) {
+      body { max-width: 800px; }
+      .top-nav { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="top-nav">
+    <div class="nav-item">
+      <a href="science.html">Binaural Beat Scientific Background</a>
+    </div>
+    <div class="nav-item">
+      <a href="index.html">WebApp</a>
+    </div>
+    <div class="nav-item current">Project Code</div>
+  </div>
+
+  <h1>Webapp Code and Project Files</h1>
+
+  <div class="info">
+    <strong>Code of the Binaural Beat Generator:</strong>
+    I decided to share my code with an open-source license (the <strong>Unlicense</strong>, effectively public domain) because I believe binaural beats should be freely available for anyone to use as they see fit for their own benefit in terms of mental health, focus, sleep, or any other application.
+    <br><br>
+    The <strong>webapp itself</strong> (the binaural beat generator) is implemented as a <strong>single HTML file</strong> that contains all of the needed <strong>CSS</strong> and <strong>JavaScript</strong> to run in a standard web browser.
+    <br><br>
+    This <strong>overall project</strong> (the website) consists of:
+    <ul>
+      <li><strong>WebApp page:</strong> <code>index.html</code></li>
+      <li><strong>Scientific background page:</strong> <code>science.html</code></li>
+      <li><strong>Code &amp; downloads page:</strong> <code>code.html</code></li>
+      <li><strong>Optional masker audio files</strong> (e.g., <code>Pink Noise.wav</code>, <code>Brown Noise.wav</code>, etc.)</li>
+    </ul>
+    By downloading the project, you can run it on your local laptop/desktop by opening <code>index.html</code> in a web browser, ensuring offline access.
+    On phones, running this code locally may work but has not been teseted.
+    <br><br>
+    Additionally, if you download the project, you can easily modify the code (manually or using AI) to substitute in any additional masker files that you prefer, assuming you prefer doing that to simply playing the pure tone and having a different window streaming music, video, or other sounds.
+    Ultimately I anticipate that any long-term users of binaural beats for personal purposes will likely broaden their focus into binaural beat tracks made by professional creators with specific purposes, or simply layer the beats from an app like mine (or one capable of generating multiple beat frequencies at once) over any preferred masking sound on YouTube, a music app, or anywhere else.
+  </div>
+
+  <div class="section">
+    <h2>Download</h2>
+    <p class="note">
+      This button downloads a <code>.zip</code> containing the project files needed to run the app locally on a laptop/desktop browser.
+    </p>
+    <div class="download-wrap">
+      <a class="download-btn" href="binaural-beat-generator.zip" download>Download Project</a>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>License (Unlicense / Public Domain Equivalent)</h2>
+    <p class="note">
+      This license is included so that anyone can copy, modify, redistribute, and use this code for any purpose (including commercial use) without asking permission and without attribution requirements.
+    </p>
+    <pre><code>UNLICENSE
+
+This is free and unencumbered software released into the public domain.
+
+Anyone is free to copy, modify, publish, use, compile, sell, or
+distribute this software, either in source code form or as a compiled
+binary, for any purpose, commercial or non-commercial, and by any
+means.
+
+In jurisdictions that recognize copyright laws, the author or authors
+of this software dedicate any and all copyright interest in the
+software to the public domain. We make this dedication for the benefit
+of the public at large and to the detriment of our heirs and
+successors. We intend this dedication to be an overt act of
+relinquishment in perpetuity of all present and future rights to this
+software under copyright law.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+For more information, please refer to &lt;https://unlicense.org&gt;</code></pre>
+  </div>
+
+  <div class="section">
+    <h2>The Code:</h2>
+    <p class="note">
+      This is the complete source for the webapp (<code>index.html</code>) as hosted on this site.
+    </p>
+    <pre><code id="codeBlock"></code></pre>
+  </div>
+
+  <script>
+    // Fetch and display the live hosted source of index.html so the code page stays in sync.
+    // (Works on GitHub Pages; if you rename the main file, update this path.)
+    fetch('index.html', { cache: 'no-store' })
+      .then(resp => {
+        if (!resp.ok) throw new Error('Could not load index.html');
+        return resp.text();
+      })
+      .then(text => {
+        document.getElementById('codeBlock').textContent = text;
+      })
+      .catch(err => {
+        document.getElementById('codeBlock').textContent =
+`(Could not automatically load index.html to display here.)
+
+To fix:
+- Ensure this code.html file is in the same folder as index.html
+- Ensure the site is served over HTTP(S) (GitHub Pages is fine)
+- Ensure index.html exists and is spelled exactly "index.html"
+
+Error: ${err}`;
+      });
+  </script>
+
+</body>
+</html>

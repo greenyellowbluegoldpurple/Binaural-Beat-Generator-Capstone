@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Binaural Beat Generator</title>
+    <style>
+        /* Force consistent sizing across breakpoints (prevents “mystery” width changes) */
+        *, *::before, *::after { box-sizing: border-box; }
+
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-top: 10px;
+        }
+
+        /* Top nav */
+        .top-nav {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        .nav-item {
+            background-color: white;
+            border-radius: 10px;
+            padding: 12px 14px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+            text-align: center;
+            font-weight: bold;
+        }
+        .nav-item a {
+            text-decoration: none;
+            color: #1e88e5;
+        }
+        .nav-item a:hover {
+            text-decoration: underline;
+        }
+        .nav-item.current {
+            color: #111;
+        }
+
+        .section {
+            background-color: white;
+            padding: 20px;
+            margin: 16px 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .section h2 {
+            color: #555;
+            margin-top: 0;
+            font-size: 18px;
+            display: flex;
+            align-items: center;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 15px;
+            flex-wrap: nowrap; /* ensure the row stays a single row when it “fits” */
+        }
+
+        .slider {
+            flex: 1 1 auto;
+            min-width: 140px;
+        }
+
+        /* Lock number input width so it NEVER changes across layouts */
+        input[type="number"] {
+            width: 90px;
+            min-width: 90px;
+            max-width: 90px;
+            padding: 5px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            flex: 0 0 90px;
+        }
+
+        select {
+            padding: 5px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background-color: white;
+            min-width: 170px;
+        }
+
+        button {
+            padding: 8px 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            flex: 0 0 auto;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+
+        #toggleAudio {
+            width: 100%;
+            padding: 15px;
+            font-size: 16px;
+            font-weight: bold;
+            margin-top: 18px;
+        }
+        #toggleAudio.playing {
+            background-color: #f44336;
+        }
+        #toggleAudio.playing:hover {
+            background-color: #da190b;
+        }
+
+        .display-value {
+            min-width: 110px;
+            padding: 5px 10px;
+            background-color: #f0f0f0;
+            border-radius: 4px;
+            text-align: center;
+            font-weight: bold;
+            flex: 0 0 auto;
+        }
+
+        .info {
+            background-color: #e7f3ff;
+            padding: 15px;
+            border-left: 4px solid #2196F3;
+            margin-top: 14px;
+            border-radius: 4px;
+        }
+        .background {
+            background-color: #f0f7e7;
+            padding: 15px;
+            border-left: 4px solid #4CAF50;
+            margin-top: 14px;
+            border-radius: 4px;
+        }
+        .guide {
+            background-color: #fff9e6;
+            padding: 15px;
+            border-left: 4px solid #FF9800;
+            margin-top: 14px;
+            border-radius: 4px;
+        }
+        .guide p {
+            margin: 8px 0;
+            line-height: 1.6;
+        }
+        #maskerStatusMessage {
+            display: none;
+            color: red;
+            font-size: 14px;
+            font-weight: normal;
+            margin-left: 15px;
+        }
+
+        /* Two-column control layout */
+        .controls-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-top: 10px;
+        }
+
+        /* Keep 2-column until it would start clipping the right-side display/value box.
+           This breakpoint is intentionally conservative to guarantee the full right column fits. */
+        @media (max-width: 980px) {
+            body { max-width: 800px; }
+            .controls-grid { grid-template-columns: 1fr; }
+            .top-nav { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="top-nav">
+        <div class="nav-item">
+            <a href="science.html">Binaural Beat Scientific Background</a>
+        </div>
+        <div class="nav-item current">WebApp</div>
+        <div class="nav-item">
+            <a href="code.html">Project Code</a>
+        </div>
+    </div>
+
+    <h1>Binaural Beat Generator</h1>
+
+    <div class="background">
+        <strong>Background:</strong> Binaural beats are thought to boost activity in the brain through brainwave entrainment via the frequency-following response. To bias your state of consciousness towards a desired state of activity, select a frequency in the range corresponding to the brain wave state that you desire to experience.
+    </div>
+
+    <div class="info">
+        <strong>Instructions:</strong> Use headphones for the best binaural beat experience. The left ear receives the carrier frequency minus half the beat frequency, and the right ear receives the carrier frequency plus half the beat frequency. Adjust the volume until the beat is barely perceptible, then allow it to fade into the background as you engage in some other activity.
+        <br><br>
+        The Binaural Beat Frequency Slider only goes up to 40 because most listeners stop perceiving the binaural beat effect around that point, but you can set it as high as you want using the number entry box. Values above double the Beat Carrier Frequency will clamp the left ear output to a minimum nonzero value.
+    </div>
+
+    <div class="guide">
+        <strong>Brain Wave Guide:</strong>
+        <p><strong>Delta Waves (0.5 - 4 Hz):</strong> Associated with deep, dreamless sleep, unconsciousness.</p>
+        <p><strong>Theta Waves (4 - 8 Hz):</strong> Linked to deep meditation, REM sleep, and creativity, strong emotional connection.</p>
+        <p><strong>Alpha Waves (8 - 13 Hz):</strong> Corresponds to a state of relaxed wakefulness and reduced anxiety, calm alertness, light meditation.</p>
+        <p><strong>Beta Waves (13 - 30 Hz):</strong> Associated with active thinking, focus, concentration, and alertness. High-beta frequencies are associated with stress, excitement, or anxiety.</p>
+        <p><strong>Gamma Waves (&gt;40 Hz):</strong> Associated with peak concentration and focus, problem-solving and insight, high-level memory recall.</p>
+        <hr>
+        <p><strong>Suggestion:</strong> For studying, experiment with the range from 6 Hz mid-alpha up to 18 Hz mid-beta waves. Going lower may make you sleepy, and going higher may make you anxious, although 40 Hz is also a great frequency to try! Only by trying different frequencies will you find what works best for you.</p>
+    </div>
+
+    <div class="controls-grid">
+        <!-- Left column -->
+        <div>
+            <div class="section">
+                <h2>Beat Carrier Frequency</h2>
+                <div class="control-group">
+                    <input type="range" id="carrierSlider" class="slider" min="0" max="2000" step="0.001" value="440">
+                    <input type="number" id="carrierInput" min="0" max="2000" step="0.001" value="440">
+                    <button id="carrierEnter">Enter</button>
+                    <div class="display-value" id="carrierDisplay">440.000 Hz</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Binaural Beat Frequency</h2>
+                <div class="control-group">
+                    <input type="range" id="beatSlider" class="slider" min="0" max="40" step="0.001" value="0">
+                    <input type="number" id="beatInput" min="0" step="0.001" value="0">
+                    <button id="beatEnter">Enter</button>
+                    <div class="display-value" id="beatDisplay">0.000 Hz</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Masker<span id="maskerStatusMessage">Masker file not found</span></h2>
+                <div class="control-group">
+                    <select id="maskerSelect">
+                        <option>No Masker</option>
+                        <option>Pink Noise</option>
+                        <option>Brown Noise</option>
+                        <option>Waterfall</option>
+                        <option>Ocean Surf</option>
+                        <option>Meadow</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right column -->
+        <div>
+            <div class="section">
+                <h2>Master Volume</h2>
+                <div class="control-group">
+                    <input type="range" id="masterVolumeSlider" class="slider" min="0" max="100" step="0.001" value="30">
+                    <input type="number" id="masterVolumeInput" min="0" max="100" step="0.001" value="30">
+                    <button id="masterVolumeEnter">Enter</button>
+                    <div class="display-value" id="masterVolumeDisplay">30.000 %</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Binaural Beat Volume</h2>
+                <div class="control-group">
+                    <input type="range" id="binauralVolumeSlider" class="slider" min="0" max="100" step="0.001" value="30">
+                    <input type="number" id="binauralVolumeInput" min="0" max="100" step="0.001" value="30">
+                    <button id="binauralVolumeEnter">Enter</button>
+                    <div class="display-value" id="binauralVolumeDisplay">30.000 %</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Masker Volume</h2>
+                <div class="control-group">
+                    <input type="range" id="maskerVolumeSlider" class="slider" min="0" max="100" step="0.001" value="50">
+                    <input type="number" id="maskerVolumeInput" min="0" max="100" step="0.001" value="50">
+                    <button id="maskerVolumeEnter">Enter</button>
+                    <div class="display-value" id="maskerVolumeDisplay">50.000 %</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <button id="toggleAudio">Start Audio</button>
+
+    <script>
+        let audioContext;
+
+        let oscillatorLeft, oscillatorRight;
+        let binauralGainLeft, binauralGainRight;
+        let binauralGain; // controls overall binaural beat volume
+        let maskerGain;   // controls masker volume
+        let masterGain;   // controls total output volume
+        let pannerLeft, pannerRight;
+
+        let maskerAudioEl;
+        let maskerSourceNode;
+
+        let isPlaying = false;
+
+        let carrier_wave = 440;
+        let beat_frequency = 0;
+
+        let masterVolume = 30;
+        let binauralVolume = 30;
+        let maskerVolume = 50;
+
+        const GAIN_FLOOR = 0.0001;
+
+        // Slider-scrub smoothing params
+        const DRAG_TIME_CONSTANT = 0.05;     // smoother, more forgiving during dragging
+        const RELEASE_RAMP_SECONDS = 0.03;   // quick final settle on release/enter
+        const INPUT_EPSILON = 1e-12;
+
+        // rAF throttle state
+        let rafPending = false;
+        let pendingMasterGainValue = null;
+        let pendingBinauralGainValue = null;
+        let pendingMaskerGainValue = null;
+
+        const carrierSlider = document.getElementById('carrierSlider');
+        const carrierInput = document.getElementById('carrierInput');
+        const carrierEnter = document.getElementById('carrierEnter');
+        const carrierDisplay = document.getElementById('carrierDisplay');
+
+        const beatSlider = document.getElementById('beatSlider');
+        const beatInput = document.getElementById('beatInput');
+        const beatEnter = document.getElementById('beatEnter');
+        const beatDisplay = document.getElementById('beatDisplay');
+
+        const masterVolumeSlider = document.getElementById('masterVolumeSlider');
+        const masterVolumeInput = document.getElementById('masterVolumeInput');
+        const masterVolumeEnter = document.getElementById('masterVolumeEnter');
+        const masterVolumeDisplay = document.getElementById('masterVolumeDisplay');
+
+        const binauralVolumeSlider = document.getElementById('binauralVolumeSlider');
+        const binauralVolumeInput = document.getElementById('binauralVolumeInput');
+        const binauralVolumeEnter = document.getElementById('binauralVolumeEnter');
+        const binauralVolumeDisplay = document.getElementById('binauralVolumeDisplay');
+
+        const maskerSelect = document.getElementById('maskerSelect');
+        const maskerVolumeSlider = document.getElementById('maskerVolumeSlider');
+        const maskerVolumeInput = document.getElementById('maskerVolumeInput');
+        const maskerVolumeEnter = document.getElementById('maskerVolumeEnter');
+        const maskerVolumeDisplay = document.getElementById('maskerVolumeDisplay');
+        const maskerStatusMessage = document.getElementById('maskerStatusMessage');
+
+        const toggleButton = document.getElementById('toggleAudio');
+
+        function clampGainFloor(x) {
+            return Math.max(GAIN_FLOOR, x);
+        }
+
+        function volumePercentToGain(volumePercent, calibration = 1.0) {
+            // Perceptual-ish curve: square the slider and apply calibration
+            const lin = Math.pow(volumePercent / 100, 2) * calibration;
+            return clampGainFloor(lin);
+        }
+
+        function scheduleGainTarget(param, target, timeConstant = DRAG_TIME_CONSTANT) {
+            const now = audioContext.currentTime;
+            // Ensure stable behavior even if param currently at 0
+            if (param.value <= 0) param.setValueAtTime(GAIN_FLOOR, now);
+            param.setTargetAtTime(clampGainFloor(target), now + INPUT_EPSILON, timeConstant);
+        }
+
+        function scheduleGainRelease(param, target, rampSeconds = RELEASE_RAMP_SECONDS) {
+            const now = audioContext.currentTime;
+            const t = now + rampSeconds;
+            param.cancelScheduledValues(now);
+            param.setValueAtTime(clampGainFloor(param.value), now);
+            param.linearRampToValueAtTime(clampGainFloor(target), t);
+        }
+
+        function requestGainRaf() {
+            if (rafPending) return;
+            rafPending = true;
+            requestAnimationFrame(() => {
+                rafPending = false;
+                if (!isPlaying || !audioContext) {
+                    pendingMasterGainValue = null;
+                    pendingBinauralGainValue = null;
+                    pendingMaskerGainValue = null;
+                    return;
+                }
+                if (pendingMasterGainValue !== null) {
+                    scheduleGainTarget(masterGain.gain, pendingMasterGainValue, DRAG_TIME_CONSTANT);
+                    pendingMasterGainValue = null;
+                }
+                if (pendingBinauralGainValue !== null) {
+                    scheduleGainTarget(binauralGain.gain, pendingBinauralGainValue, DRAG_TIME_CONSTANT);
+                    pendingBinauralGainValue = null;
+                }
+                if (pendingMaskerGainValue !== null) {
+                    scheduleGainTarget(maskerGain.gain, pendingMaskerGainValue, DRAG_TIME_CONSTANT);
+                    pendingMaskerGainValue = null;
+                }
+            });
+        }
+
+        function updateCarrierFrequency(value, useRamp = false) {
+            carrier_wave = parseFloat(value);
+            carrierSlider.value = carrier_wave;
+            carrierInput.value = carrier_wave.toFixed(3);
+            carrierDisplay.textContent = carrier_wave.toFixed(3) + ' Hz';
+            if (isPlaying) updateOscillators(useRamp);
+        }
+
+        function updateBeatFrequency(value, useRamp = false) {
+            beat_frequency = parseFloat(value);
+            beatSlider.value = beat_frequency;
+            beatInput.value = beat_frequency.toFixed(3);
+            beatDisplay.textContent = beat_frequency.toFixed(3) + ' Hz';
+            if (isPlaying) updateOscillators(useRamp);
+        }
+
+        function updateMasterVolumeUI(value) {
+            masterVolume = parseFloat(value);
+            masterVolumeSlider.value = masterVolume;
+            masterVolumeInput.value = masterVolume.toFixed(3);
+            masterVolumeDisplay.textContent = masterVolume.toFixed(3) + ' %';
+        }
+
+        function updateBinauralVolumeUI(value) {
+            binauralVolume = parseFloat(value);
+            binauralVolumeSlider.value = binauralVolume;
+            binauralVolumeInput.value = binauralVolume.toFixed(3);
+            binauralVolumeDisplay.textContent = binauralVolume.toFixed(3) + ' %';
+        }
+
+        function updateMaskerVolumeUI(value) {
+            maskerVolume = parseFloat(value);
+            maskerVolumeSlider.value = maskerVolume;
+            maskerVolumeInput.value = maskerVolume.toFixed(3);
+            maskerVolumeDisplay.textContent = maskerVolume.toFixed(3) + ' %';
+        }
+
+        function applyMasterGainDrag() {
+            if (!isPlaying) return;
+            // calibration keeps overall level reasonable
+            const target = volumePercentToGain(masterVolume, 1.0);
+            pendingMasterGainValue = target;
+            requestGainRaf();
+        }
+
+        function applyBinauralGainDrag() {
+            if (!isPlaying) return;
+            const target = volumePercentToGain(binauralVolume, 0.35);
+            pendingBinauralGainValue = target;
+            requestGainRaf();
+        }
+
+        function applyMaskerGainDrag() {
+            if (!isPlaying) return;
+            const target = volumePercentToGain(maskerVolume, 0.60);
+            pendingMaskerGainValue = target;
+            requestGainRaf();
+        }
+
+        function applyMasterGainRelease() {
+            if (!isPlaying) return;
+            const target = volumePercentToGain(masterVolume, 1.0);
+            scheduleGainRelease(masterGain.gain, target, RELEASE_RAMP_SECONDS);
+        }
+
+        function applyBinauralGainRelease() {
+            if (!isPlaying) return;
+            const target = volumePercentToGain(binauralVolume, 0.35);
+            scheduleGainRelease(binauralGain.gain, target, RELEASE_RAMP_SECONDS);
+        }
+
+        function applyMaskerGainRelease() {
+            if (!isPlaying) return;
+            const target = volumePercentToGain(maskerVolume, 0.60);
+            scheduleGainRelease(maskerGain.gain, target, RELEASE_RAMP_SECONDS);
+        }
+
+        function safeRampFrequency(param, value, rampSeconds = 0.01) {
+            const now = audioContext.currentTime;
+            const v = Math.max(0.001, value);
+            param.cancelScheduledValues(now);
+            param.setValueAtTime(Math.max(0.001, param.value), now);
+            param.exponentialRampToValueAtTime(v, now + rampSeconds);
+        }
+
+        function maskerFilenameFromSelectValue(selectValue) {
+            return selectValue + '.wav';
+        }
+
+        function handleMaskerChange() {
+            const selectedMasker = maskerSelect.value;
+            maskerStatusMessage.style.display = 'none';
+
+            if (!isPlaying) return;
+
+            stopMaskerSource();
+
+            if (selectedMasker === 'No Masker') return;
+
+            if (!maskerAudioEl) {
+                maskerAudioEl = new Audio();
+                maskerAudioEl.loop = true;
+                maskerAudioEl.crossOrigin = "anonymous";
+            }
+
+            maskerAudioEl.src = maskerFilenameFromSelectValue(selectedMasker);
+            maskerAudioEl.load();
+
+            const playPromise = maskerAudioEl.play();
+            if (playPromise !== undefined) {
+                playPromise
+                    .then(() => {
+                        try {
+                            maskerSourceNode = audioContext.createMediaElementSource(maskerAudioEl);
+                            maskerSourceNode.connect(maskerGain);
+                        } catch (e) {
+                            console.error("Masker routing error:", e);
+                            maskerStatusMessage.style.display = 'inline';
+                        }
+                    })
+                    .catch(err => {
+                        console.error("Error playing masker audio:", err);
+                        maskerStatusMessage.style.display = 'inline';
+                    });
+            }
+        }
+
+        function stopMaskerSource() {
+            if (maskerAudioEl) {
+                try { maskerAudioEl.pause(); } catch (_) {}
+                try { maskerAudioEl.currentTime = 0; } catch (_) {}
+            }
+            if (maskerSourceNode) {
+                try { maskerSourceNode.disconnect(); } catch (_) {}
+                maskerSourceNode = null;
+            }
+        }
+
+        function updateOscillators(useRamp = false) {
+            const leftFreq = Math.max(0.001, carrier_wave - (beat_frequency / 2));
+            const rightFreq = Math.max(0.001, carrier_wave + (beat_frequency / 2));
+
+            if (!audioContext) return;
+
+            if (useRamp) {
+                safeRampFrequency(oscillatorLeft.frequency, leftFreq, 0.01);
+                safeRampFrequency(oscillatorRight.frequency, rightFreq, 0.01);
+            } else {
+                const now = audioContext.currentTime;
+                oscillatorLeft.frequency.setValueAtTime(leftFreq, now);
+                oscillatorRight.frequency.setValueAtTime(rightFreq, now);
+            }
+        }
+
+        function setInitialGainsNoRamp() {
+            const now = audioContext.currentTime;
+            masterGain.gain.setValueAtTime(volumePercentToGain(masterVolume, 1.0), now);
+            binauralGain.gain.setValueAtTime(volumePercentToGain(binauralVolume, 0.35), now);
+            maskerGain.gain.setValueAtTime(volumePercentToGain(maskerVolume, 0.60), now);
+        }
+
+        carrierSlider.addEventListener('input', (e) => updateCarrierFrequency(e.target.value, true));
+        carrierEnter.addEventListener('click', () => updateCarrierFrequency(carrierInput.value, false));
+        carrierInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') updateCarrierFrequency(carrierInput.value, false); });
+
+        beatSlider.addEventListener('input', (e) => updateBeatFrequency(e.target.value, true));
+        beatEnter.addEventListener('click', () => updateBeatFrequency(beatInput.value, false));
+        beatInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') updateBeatFrequency(beatInput.value, false); });
+
+        // MASTER VOLUME: drag (input) + release (change) + enter
+        masterVolumeSlider.addEventListener('input', (e) => { updateMasterVolumeUI(e.target.value); applyMasterGainDrag(); });
+        masterVolumeSlider.addEventListener('change', () => { applyMasterGainRelease(); });
+        masterVolumeEnter.addEventListener('click', () => { updateMasterVolumeUI(masterVolumeInput.value); applyMasterGainRelease(); });
+        masterVolumeInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') { updateMasterVolumeUI(masterVolumeInput.value); applyMasterGainRelease(); } });
+
+        // BINAURAL VOLUME: drag (input) + release (change) + enter
+        binauralVolumeSlider.addEventListener('input', (e) => { updateBinauralVolumeUI(e.target.value); applyBinauralGainDrag(); });
+        binauralVolumeSlider.addEventListener('change', () => { applyBinauralGainRelease(); });
+        binauralVolumeEnter.addEventListener('click', () => { updateBinauralVolumeUI(binauralVolumeInput.value); applyBinauralGainRelease(); });
+        binauralVolumeInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') { updateBinauralVolumeUI(binauralVolumeInput.value); applyBinauralGainRelease(); } });
+
+        // MASKER VOLUME: drag (input) + release (change) + enter
+        maskerSelect.addEventListener('change', handleMaskerChange);
+        maskerVolumeSlider.addEventListener('input', (e) => { updateMaskerVolumeUI(e.target.value); applyMaskerGainDrag(); });
+        maskerVolumeSlider.addEventListener('change', () => { applyMaskerGainRelease(); });
+        maskerVolumeEnter.addEventListener('click', () => { updateMaskerVolumeUI(maskerVolumeInput.value); applyMaskerGainRelease(); });
+        maskerVolumeInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') { updateMaskerVolumeUI(maskerVolumeInput.value); applyMaskerGainRelease(); } });
+
+        function startAudio() {
+            if (audioContext && audioContext.state === 'running') return;
+
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+            oscillatorLeft = audioContext.createOscillator();
+            oscillatorRight = audioContext.createOscillator();
+            oscillatorLeft.type = 'sine';
+            oscillatorRight.type = 'sine';
+
+            binauralGainLeft = audioContext.createGain();
+            binauralGainRight = audioContext.createGain();
+            binauralGainLeft.gain.value = 1;
+            binauralGainRight.gain.value = 1;
+
+            pannerLeft = audioContext.createStereoPanner();
+            pannerRight = audioContext.createStereoPanner();
+            pannerLeft.pan.value = -1;
+            pannerRight.pan.value = 1;
+
+            binauralGain = audioContext.createGain();
+            maskerGain = audioContext.createGain();
+            masterGain = audioContext.createGain();
+
+            oscillatorLeft.connect(binauralGainLeft).connect(pannerLeft).connect(binauralGain);
+            oscillatorRight.connect(binauralGainRight).connect(pannerRight).connect(binauralGain);
+
+            binauralGain.connect(masterGain);
+            maskerGain.connect(masterGain);
+            masterGain.connect(audioContext.destination);
+
+            // Set initial values immediately to avoid sudden jumps on start
+            setInitialGainsNoRamp();
+            updateOscillators(false);
+
+            oscillatorLeft.start();
+            oscillatorRight.start();
+
+            isPlaying = true;
+            toggleButton.textContent = 'Stop Audio';
+            toggleButton.classList.add('playing');
+
+            handleMaskerChange();
+        }
+
+        function stopAudio() {
+            if (!isPlaying) return;
+
+            stopMaskerSource();
+
+            if (audioContext) {
+                audioContext.close().then(() => { audioContext = null; }).catch(() => { audioContext = null; });
+            }
+
+            isPlaying = false;
+            toggleButton.textContent = 'Start Audio';
+            toggleButton.classList.remove('playing');
+
+            // Clear pending rAF updates
+            pendingMasterGainValue = null;
+            pendingBinauralGainValue = null;
+            pendingMaskerGainValue = null;
+        }
+
+        toggleButton.addEventListener('click', () => {
+            if (isPlaying) stopAudio();
+            else startAudio();
+        });
+
+        // Initialize UI states on load (no audio yet)
+        updateCarrierFrequency(440);
+        updateBeatFrequency(0);
+        updateMasterVolumeUI(30);
+        updateBinauralVolumeUI(30);
+        updateMaskerVolumeUI(50);
+    </script>
+</body>
+</html>
