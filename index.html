@@ -302,8 +302,13 @@
         let masterGain;   // controls total output volume
         let pannerLeft, pannerRight;
 
-        let maskerAudioEl;
-        let maskerSourceNode;
+        // Masker elements/nodes (reused; do NOT recreate MediaElementSource per selection)
+        let maskerAudioEl = null;
+        let maskerSourceNode = null;
+
+        // Masker selection/load state
+        let currentMaskerName = 'No Masker';
+        let currentMaskerObjectURL = null;
 
         let isPlaying = false;
 
@@ -320,6 +325,10 @@
         const DRAG_TIME_CONSTANT = 0.05;     // smoother, more forgiving during dragging
         const RELEASE_RAMP_SECONDS = 0.03;   // quick final settle on release/enter
         const INPUT_EPSILON = 1e-12;
+
+        // Masker behavior params
+        const MASKER_FADEIN_SECONDS = 1.5;
+        const MASKER_START_SAFETY_SECONDS = 0.25; // avoid starting right at 0 or end
 
         // rAF throttle state
         let rafPending = false;
@@ -496,52 +505,175 @@
             return selectValue + '.wav';
         }
 
-        function handleMaskerChange() {
-            const selectedMasker = maskerSelect.value;
+        function clearMaskerError() {
             maskerStatusMessage.style.display = 'none';
+        }
 
-            if (!isPlaying) return;
+        function showMaskerError() {
+            maskerStatusMessage.style.display = 'inline';
+        }
 
-            stopMaskerSource();
+        function ensureMaskerAudioElement() {
+            if (maskerAudioEl) return;
 
-            if (selectedMasker === 'No Masker') return;
+            maskerAudioEl = new Audio();
+            maskerAudioEl.loop = true;
 
-            if (!maskerAudioEl) {
-                maskerAudioEl = new Audio();
-                maskerAudioEl.loop = true;
-                maskerAudioEl.crossOrigin = "anonymous";
-            }
+            // Note: if you open the page as file://, some browsers will still fail to load audio.
+            // Host via http:// (python -m http.server) for reliable behavior.
+            maskerAudioEl.crossOrigin = "anonymous";
 
-            maskerAudioEl.src = maskerFilenameFromSelectValue(selectedMasker);
-            maskerAudioEl.load();
+            // If the file can't be loaded/decoded, show error
+            maskerAudioEl.addEventListener('error', () => {
+                showMaskerError();
+            });
+        }
 
-            const playPromise = maskerAudioEl.play();
-            if (playPromise !== undefined) {
-                playPromise
-                    .then(() => {
-                        try {
-                            maskerSourceNode = audioContext.createMediaElementSource(maskerAudioEl);
-                            maskerSourceNode.connect(maskerGain);
-                        } catch (e) {
-                            console.error("Masker routing error:", e);
-                            maskerStatusMessage.style.display = 'inline';
-                        }
-                    })
-                    .catch(err => {
-                        console.error("Error playing masker audio:", err);
-                        maskerStatusMessage.style.display = 'inline';
-                    });
+        function ensureMaskerSourceNode() {
+            // Only create when audioContext exists (i.e., after Start Audio)
+            if (!audioContext) return;
+            if (!maskerAudioEl) return;
+            if (maskerSourceNode) return;
+
+            try {
+                maskerSourceNode = audioContext.createMediaElementSource(maskerAudioEl);
+                maskerSourceNode.connect(maskerGain);
+            } catch (e) {
+                console.error("Masker routing error:", e);
+                showMaskerError();
             }
         }
 
-        function stopMaskerSource() {
-            if (maskerAudioEl) {
-                try { maskerAudioEl.pause(); } catch (_) {}
-                try { maskerAudioEl.currentTime = 0; } catch (_) {}
+        function stopMaskerPlaybackPreservePosition() {
+            if (!maskerAudioEl) return;
+            try { maskerAudioEl.pause(); } catch (_) {}
+            // Do not reset currentTime here (your requirement: preserve position when stopping audio)
+        }
+
+        function randomizeMaskerPositionIfPossible() {
+            if (!maskerAudioEl) return;
+            const d = maskerAudioEl.duration;
+            if (!Number.isFinite(d) || d <= 0) return;
+
+            const safety = Math.min(MASKER_START_SAFETY_SECONDS, d * 0.1);
+            const minT = Math.min(safety, d);
+            const maxT = Math.max(d - safety, 0);
+
+            const t = (maxT > minT) ? (minT + Math.random() * (maxT - minT)) : 0;
+            try { maskerAudioEl.currentTime = t; } catch (_) {}
+        }
+
+        function fadeInMaskerFromSilence() {
+            if (!audioContext || !maskerGain) return;
+
+            const now = audioContext.currentTime;
+            const target = volumePercentToGain(maskerVolume, 0.60);
+
+            maskerGain.gain.cancelScheduledValues(now);
+            maskerGain.gain.setValueAtTime(GAIN_FLOOR, now);
+            maskerGain.gain.linearRampToValueAtTime(target, now + MASKER_FADEIN_SECONDS);
+        }
+
+        function applyMaskerGainImmediateToCurrentVolume() {
+            if (!audioContext || !maskerGain) return;
+            const now = audioContext.currentTime;
+            maskerGain.gain.cancelScheduledValues(now);
+            maskerGain.gain.setValueAtTime(volumePercentToGain(maskerVolume, 0.60), now);
+        }
+
+        /**
+         * Desired masker behavior implemented:
+         *
+         * When audio is stopped:
+         * - selecting a masker attempts to load it; if fail => show error
+         * - switching to "No Masker" clears error
+         * - audio does not play; if it was already playing, its position is preserved
+         * - switching maskers resets to a random position (preselected even while stopped)
+         *
+         * When audio is playing:
+         * - selecting a masker plays from random location and fades in 1.5s
+         * - selecting "No Masker" stops masker playback
+         */
+        function handleMaskerChange() {
+            const selectedMasker = maskerSelect.value;
+
+            // Clear error on any user change; we'll re-show on failure
+            clearMaskerError();
+
+            ensureMaskerAudioElement();
+
+            // Stop masker playback (preserve position unless we are switching to a new masker)
+            stopMaskerPlaybackPreservePosition();
+
+            // "No Masker" => nothing plays
+            if (selectedMasker === 'No Masker') {
+                currentMaskerName = 'No Masker';
+                clearMaskerError();
+                return;
             }
-            if (maskerSourceNode) {
-                try { maskerSourceNode.disconnect(); } catch (_) {}
-                maskerSourceNode = null;
+
+            // If switching to a different masker, reset to random position in the new file
+            const changingToDifferent = (selectedMasker !== currentMaskerName);
+            currentMaskerName = selectedMasker;
+
+            // Point at file and try to load it
+            maskerAudioEl.src = maskerFilenameFromSelectValue(selectedMasker);
+
+            // Attach one-time listeners for this selection attempt
+            const token = Symbol('masker-load-token');
+            maskerAudioEl._loadToken = token;
+
+            const cleanup = () => {
+                maskerAudioEl.removeEventListener('loadedmetadata', onLoadedMetadata);
+                maskerAudioEl.removeEventListener('canplaythrough', onCanPlayThrough);
+                maskerAudioEl.removeEventListener('error', onErrorOnce);
+            };
+
+            const onErrorOnce = () => {
+                if (maskerAudioEl._loadToken !== token) return;
+                cleanup();
+                showMaskerError();
+            };
+
+            const onLoadedMetadata = () => {
+                if (maskerAudioEl._loadToken !== token) return;
+
+                // Your requirement: switching maskers resets audio to a random position
+                if (changingToDifferent) {
+                    randomizeMaskerPositionIfPossible();
+                }
+
+                // If stopped, we don't play; we just did a meaningful load attempt.
+                if (!isPlaying) return;
+
+                // If playing, attempt playback after metadata is ready.
+                ensureMaskerSourceNode();
+                fadeInMaskerFromSilence();
+
+                maskerAudioEl.play().catch(err => {
+                    console.error("Error playing masker audio:", err);
+                    showMaskerError();
+                });
+            };
+
+            const onCanPlayThrough = () => {
+                if (maskerAudioEl._loadToken !== token) return;
+                // If we got this far, the file is definitely usable; clear any lingering error.
+                clearMaskerError();
+                // Leave listeners; loadedmetadata may still fire, but we can clean up once both have fired.
+                // We'll just clean up here to avoid buildup.
+                cleanup();
+            };
+
+            maskerAudioEl.addEventListener('error', onErrorOnce, { once: true });
+            maskerAudioEl.addEventListener('loadedmetadata', onLoadedMetadata);
+            maskerAudioEl.addEventListener('canplaythrough', onCanPlayThrough, { once: true });
+
+            maskerAudioEl.load();
+
+            // If already playing and metadata is cached (rare), start immediately
+            if (isPlaying && Number.isFinite(maskerAudioEl.duration) && maskerAudioEl.duration > 0) {
+                onLoadedMetadata();
             }
         }
 
@@ -565,7 +697,9 @@
             const now = audioContext.currentTime;
             masterGain.gain.setValueAtTime(volumePercentToGain(masterVolume, 1.0), now);
             binauralGain.gain.setValueAtTime(volumePercentToGain(binauralVolume, 0.35), now);
-            maskerGain.gain.setValueAtTime(volumePercentToGain(maskerVolume, 0.60), now);
+
+            // Start masker at floor; if a masker is selected and playing, we'll fade it in.
+            maskerGain.gain.setValueAtTime(GAIN_FLOOR, now);
         }
 
         carrierSlider.addEventListener('input', (e) => updateCarrierFrequency(e.target.value, true));
@@ -592,8 +726,19 @@
         maskerSelect.addEventListener('change', handleMaskerChange);
         maskerVolumeSlider.addEventListener('input', (e) => { updateMaskerVolumeUI(e.target.value); applyMaskerGainDrag(); });
         maskerVolumeSlider.addEventListener('change', () => { applyMaskerGainRelease(); });
-        maskerVolumeEnter.addEventListener('click', () => { updateMaskerVolumeUI(maskerVolumeInput.value); applyMaskerGainRelease(); });
-        maskerVolumeInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') { updateMaskerVolumeUI(maskerVolumeInput.value); applyMaskerGainRelease(); } });
+        maskerVolumeEnter.addEventListener('click', () => {
+            updateMaskerVolumeUI(maskerVolumeInput.value);
+            if (isPlaying) {
+                // If masker is currently playing, keep it smooth with the normal release ramp
+                applyMaskerGainRelease();
+            }
+        });
+        maskerVolumeInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                updateMaskerVolumeUI(maskerVolumeInput.value);
+                if (isPlaying) applyMaskerGainRelease();
+            }
+        });
 
         function startAudio() {
             if (audioContext && audioContext.state === 'running') return;
@@ -637,17 +782,28 @@
             toggleButton.textContent = 'Stop Audio';
             toggleButton.classList.add('playing');
 
+            // If a masker is selected, start it (random position + fade-in).
+            // If audio element exists, we also need to create the source node now.
+            ensureMaskerAudioElement();
+            ensureMaskerSourceNode();
+
+            // If "No Masker" selected, this will just stop/clear; otherwise it will play.
             handleMaskerChange();
         }
 
         function stopAudio() {
             if (!isPlaying) return;
 
-            stopMaskerSource();
+            // Stop masker playback but preserve its position (your requirement)
+            stopMaskerPlaybackPreservePosition();
 
             if (audioContext) {
                 audioContext.close().then(() => { audioContext = null; }).catch(() => { audioContext = null; });
             }
+
+            // When the AudioContext is closed, the old MediaElementSourceNode becomes invalid.
+            // Reset it; we'll recreate it next time startAudio() is pressed.
+            maskerSourceNode = null;
 
             isPlaying = false;
             toggleButton.textContent = 'Start Audio';
@@ -670,6 +826,10 @@
         updateMasterVolumeUI(30);
         updateBinauralVolumeUI(30);
         updateMaskerVolumeUI(50);
+
+        // Optional: attempt to "meaningfully select" the default masker on load
+        // (does not play; will show error if file missing)
+        // handleMaskerChange();
     </script>
 </body>
 </html>
