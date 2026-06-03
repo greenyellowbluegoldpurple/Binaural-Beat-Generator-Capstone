@@ -327,8 +327,6 @@
         const INPUT_EPSILON = 1e-12;
 
         // Masker behavior params
-        const MASKER_FADEIN_SECONDS = 1.0;       // keep "overall duration" at 1s as requested
-        const MASKER_FADE_STEP_MS = 10;          // 10ms interval steps as requested
         const MASKER_START_SAFETY_SECONDS = 0.25; // avoid starting right at 0 or end
 
         // rAF throttle state
@@ -336,9 +334,6 @@
         let pendingMasterGainValue = null;
         let pendingBinauralGainValue = null;
         let pendingMaskerGainValue = null;
-
-        // stepped fade timer (so we can cancel if masker stops/changes)
-        let maskerFadeIntervalId = null;
 
         const carrierSlider = document.getElementById('carrierSlider');
         const carrierInput = document.getElementById('carrierInput');
@@ -459,7 +454,6 @@
 
         function applyMasterGainDrag() {
             if (!isPlaying) return;
-            // calibration keeps overall level reasonable
             const target = volumePercentToGain(masterVolume, 1.0);
             pendingMasterGainValue = target;
             requestGainRaf();
@@ -522,19 +516,14 @@
 
             maskerAudioEl = new Audio();
             maskerAudioEl.loop = true;
-
-            // Note: if you open the page as file://, some browsers will still fail to load audio.
-            // Host via http:// (python -m http.server) for reliable behavior.
             maskerAudioEl.crossOrigin = "anonymous";
 
-            // If the file can't be loaded/decoded, show error
             maskerAudioEl.addEventListener('error', () => {
                 showMaskerError();
             });
         }
 
         function ensureMaskerSourceNode() {
-            // Only create when audioContext exists (i.e., after Start Audio)
             if (!audioContext) return;
             if (!maskerAudioEl) return;
             if (maskerSourceNode) return;
@@ -551,18 +540,17 @@
         function stopMaskerPlaybackPreservePosition() {
             if (!maskerAudioEl) return;
             try { maskerAudioEl.pause(); } catch (_) {}
-            // Do not reset currentTime here (your requirement: preserve position when stopping audio)
         }
 
         // === M4A padding avoidance / loop points (hardcoded) ===
         let maskerLoadingToken = 0;
 
         const MASKER_LOOP_POINTS = {
-          'Pink Noise': { loopStart: 0.000000, loopEnd: 100.000000 },      // Placeholder - update after analysis
-          'Brown Noise': { loopStart: 0.000000, loopEnd: 100.000000 },     // Placeholder - update after analysis
-          'Waterfall': { loopStart: 0.000000, loopEnd: 100.000000 },       // Placeholder - update after analysis
-          'Ocean Surf': { loopStart: 0.021229, loopEnd: 1021.021542 },     // ACTUAL VALUES from padding analysis
-          'Meadow': { loopStart: 0.000000, loopEnd: 100.000000 }           // Placeholder - update after analysis
+          'Pink Noise': { loopStart: 0.000000, loopEnd: 100.000000 },
+          'Brown Noise': { loopStart: 0.000000, loopEnd: 100.000000 },
+          'Waterfall': { loopStart: 0.000000, loopEnd: 100.000000 },
+          'Ocean Surf': { loopStart: 0.021229, loopEnd: 1021.021542 },
+          'Meadow': { loopStart: 0.000000, loopEnd: 100.000000 }
         };
 
         function computeRandomStartOffsetSeconds(buffer, maskerName) {
@@ -584,31 +572,19 @@
             const loopStart = loopPoints.loopStart;
             const loopEnd = loopPoints.loopEnd;
 
-            if (!Number.isFinite(loopStart) || !Number.isFinite(loopEnd)) {
-                console.error(`Invalid loop points for "${maskerName}"`);
-                return 0;
-            }
-
-            if (loopEnd <= loopStart) {
-                console.error(`Invalid loop range for "${maskerName}": end <= start`);
-                return loopStart;
-            }
-
-            if (loopEnd > buffer.duration) {
-                console.warn(`Loop end (${loopEnd}s) exceeds buffer duration (${buffer.duration}s) for "${maskerName}"`);
-                return loopStart;
-            }
+            if (!Number.isFinite(loopStart) || !Number.isFinite(loopEnd)) return 0;
+            if (loopEnd <= loopStart) return loopStart;
+            if (loopEnd > buffer.duration) return loopStart;
 
             return loopStart + Math.random() * (loopEnd - loopStart);
         }
 
-        // === Updated masker playback to use decoded buffer + precise loop points ===
+        // === Masker playback uses decoded buffer + precise loop points ===
         let maskerBuffer = null;
         let maskerBufferSource = null;
 
         async function loadMaskerBufferForName(maskerName) {
             const myToken = ++maskerLoadingToken;
-
             const filename = maskerFilenameFromSelectValue(maskerName);
 
             try {
@@ -638,61 +614,6 @@
             maskerBufferSource = null;
         }
 
-        // NEW: cancelable stepped fade for masker
-        function cancelMaskerFade() {
-            if (maskerFadeIntervalId !== null) {
-                clearInterval(maskerFadeIntervalId);
-                maskerFadeIntervalId = null;
-            }
-        }
-
-        // NEW: 1s fade in, stepping every 10ms
-        function fadeInMaskerFromSilence() {
-            if (!audioContext || !maskerGain) return;
-
-            cancelMaskerFade();
-
-            const now = audioContext.currentTime;
-            const target = volumePercentToGain(maskerVolume, 0.60);
-
-            // Cancel any prior automation and start at floor
-            maskerGain.gain.cancelScheduledValues(now);
-            maskerGain.gain.setValueAtTime(GAIN_FLOOR, now);
-
-            // Do stepped ramp in real time (10ms increments), using WebAudio setValueAtTime
-            const steps = Math.max(1, Math.round((MASKER_FADEIN_SECONDS * 1000) / MASKER_FADE_STEP_MS));
-            const startVal = GAIN_FLOOR;
-            const endVal = target;
-            let i = 0;
-
-            maskerFadeIntervalId = setInterval(() => {
-                if (!isPlaying || !audioContext || !maskerGain) {
-                    cancelMaskerFade();
-                    return;
-                }
-
-                i++;
-                const a = Math.min(1, i / steps);
-                const v = startVal + (endVal - startVal) * a;
-
-                // schedule slightly ahead of "now" to be robust against timer jitter
-                const t = audioContext.currentTime + 0.005;
-                try {
-                    maskerGain.gain.setValueAtTime(clampGainFloor(v), t);
-                } catch (_) {}
-
-                if (a >= 1) cancelMaskerFade();
-            }, MASKER_FADE_STEP_MS);
-        }
-
-        function applyMaskerGainImmediateToCurrentVolume() {
-            if (!audioContext || !maskerGain) return;
-            cancelMaskerFade();
-            const now = audioContext.currentTime;
-            maskerGain.gain.cancelScheduledValues(now);
-            maskerGain.gain.setValueAtTime(volumePercentToGain(maskerVolume, 0.60), now);
-        }
-
         function startMaskerFromBuffer(buffer, randomizeStart = true) {
             if (!isPlaying) return;
             if (!audioContext || !maskerGain) return;
@@ -718,8 +639,8 @@
             let offset = 0;
             if (randomizeStart) offset = computeRandomStartOffsetSeconds(buffer, currentMaskerName);
 
-            // Always fade in on start (initial or after stop/change)
-            fadeInMaskerFromSilence();
+            // IMPORTANT CHANGE: no fade-in on start; ensure maskerGain is at the current target immediately.
+            applyMaskerGainImmediateToCurrentVolume();
 
             try {
                 src.start(0, offset);
@@ -734,9 +655,7 @@
             const selectedMasker = maskerSelect.value;
 
             clearMaskerError();
-
             stopMaskerBufferSource();
-            cancelMaskerFade();
 
             if (selectedMasker === 'No Masker') {
                 currentMaskerName = 'No Masker';
@@ -796,6 +715,13 @@
             startMaskerFromBuffer(maskerBuffer, true);
         }
 
+        function applyMaskerGainImmediateToCurrentVolume() {
+            if (!audioContext || !maskerGain) return;
+            const now = audioContext.currentTime;
+            maskerGain.gain.cancelScheduledValues(now);
+            maskerGain.gain.setValueAtTime(volumePercentToGain(maskerVolume, 0.60), now);
+        }
+
         function updateOscillators(useRamp = false) {
             const leftFreq = Math.max(0.001, carrier_wave - (beat_frequency / 2));
             const rightFreq = Math.max(0.001, carrier_wave + (beat_frequency / 2));
@@ -817,8 +743,8 @@
             masterGain.gain.setValueAtTime(volumePercentToGain(masterVolume, 1.0), now);
             binauralGain.gain.setValueAtTime(volumePercentToGain(binauralVolume, 0.35), now);
 
-            // Start masker at floor; if a masker is selected and playing, we'll fade it in.
-            maskerGain.gain.setValueAtTime(GAIN_FLOOR, now);
+            // IMPORTANT CHANGE: no fade-in. Set masker gain immediately to current volume.
+            maskerGain.gain.setValueAtTime(volumePercentToGain(maskerVolume, 0.60), now);
         }
 
         carrierSlider.addEventListener('input', (e) => updateCarrierFrequency(e.target.value, true));
@@ -898,7 +824,7 @@
             toggleButton.textContent = 'Stop Audio';
             toggleButton.classList.add('playing');
 
-            // If a masker is selected, start it (random position + fade-in).
+            // If a masker is selected, start it (random position; NO fade-in).
             handleMaskerChange();
         }
 
@@ -906,7 +832,6 @@
             if (!isPlaying) return;
 
             stopMaskerBufferSource();
-            cancelMaskerFade();
             maskerBuffer = null;
 
             if (audioContext) {
