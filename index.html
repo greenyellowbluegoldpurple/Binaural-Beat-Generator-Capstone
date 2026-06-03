@@ -502,7 +502,7 @@
         }
 
         function maskerFilenameFromSelectValue(selectValue) {
-            return selectValue + '.wav';
+            return selectValue + '.m4a';
         }
 
         function clearMaskerError() {
@@ -550,17 +550,224 @@
             // Do not reset currentTime here (your requirement: preserve position when stopping audio)
         }
 
-        function randomizeMaskerPositionIfPossible() {
-            if (!maskerAudioEl) return;
-            const d = maskerAudioEl.duration;
-            if (!Number.isFinite(d) || d <= 0) return;
+        // === M4A padding avoidance / loop points (hardcoded) ===
+        // Added per instructions: immediately after maskerLoadingToken (not present in this app),
+        // placed here in the masker implementation area.
+        let maskerLoadingToken = 0;
 
-            const safety = Math.min(MASKER_START_SAFETY_SECONDS, d * 0.1);
-            const minT = Math.min(safety, d);
-            const maxT = Math.max(d - safety, 0);
+        const MASKER_LOOP_POINTS = {
+          'Pink Noise': { loopStart: 0.000000, loopEnd: 100.000000 },      // Placeholder - update after analysis
+          'Brown Noise': { loopStart: 0.000000, loopEnd: 100.000000 },     // Placeholder - update after analysis
+          'Waterfall': { loopStart: 0.000000, loopEnd: 100.000000 },       // Placeholder - update after analysis
+          'Ocean Surf': { loopStart: 0.021229, loopEnd: 1021.021542 },     // ACTUAL VALUES from padding analysis
+          'Meadow': { loopStart: 0.000000, loopEnd: 100.000000 }           // Placeholder - update after analysis
+        };
 
-            const t = (maxT > minT) ? (minT + Math.random() * (maxT - minT)) : 0;
-            try { maskerAudioEl.currentTime = t; } catch (_) {}
+        function computeRandomStartOffsetSeconds(buffer, maskerName) {
+            // Validation: ensure buffer exists
+            if (!buffer || !Number.isFinite(buffer.duration) || buffer.duration <= 0) {
+                console.error("Invalid buffer for random start calculation");
+                return 0;
+            }
+
+            // Look up loop points for this masker
+            const loopPoints = MASKER_LOOP_POINTS[maskerName];
+
+            // Fallback if masker not in lookup table
+            if (!loopPoints) {
+                console.warn(`No loop points defined for "${maskerName}", using default behavior`);
+                const safety = Math.min(MASKER_START_SAFETY_SECONDS, buffer.duration * 0.1);
+                const minT = Math.min(safety, buffer.duration);
+                const maxT = Math.max(buffer.duration - safety, 0);
+                return (maxT > minT) ? (minT + Math.random() * (maxT - minT)) : 0;
+            }
+
+            // Validation: ensure loop points are valid
+            const loopStart = loopPoints.loopStart;
+            const loopEnd = loopPoints.loopEnd;
+
+            if (!Number.isFinite(loopStart) || !Number.isFinite(loopEnd)) {
+                console.error(`Invalid loop points for "${maskerName}"`);
+                return 0;
+            }
+
+            if (loopEnd <= loopStart) {
+                console.error(`Invalid loop range for "${maskerName}": end <= start`);
+                return loopStart;
+            }
+
+            if (loopEnd > buffer.duration) {
+                console.warn(`Loop end (${loopEnd}s) exceeds buffer duration (${buffer.duration}s) for "${maskerName}"`);
+                return loopStart;
+            }
+
+            // Calculate random position within valid loop range
+            const randomOffset = loopStart + Math.random() * (loopEnd - loopStart);
+            return randomOffset;
+        }
+
+        // === Updated masker playback to use decoded buffer + precise loop points ===
+        let maskerBuffer = null;
+        let maskerBufferSource = null;
+
+        async function loadMaskerBufferForName(maskerName) {
+            // Bump token so in-flight loads are ignored
+            const myToken = ++maskerLoadingToken;
+
+            const filename = maskerFilenameFromSelectValue(maskerName);
+
+            try {
+                const resp = await fetch(filename);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${filename}`);
+
+                const arr = await resp.arrayBuffer();
+
+                // Decode. decodeAudioData is promise in modern browsers; keep callback fallback.
+                const decoded = await new Promise((resolve, reject) => {
+                    const p = audioContext.decodeAudioData(arr, resolve, reject);
+                    if (p && typeof p.then === 'function') p.then(resolve).catch(reject);
+                });
+
+                if (myToken !== maskerLoadingToken) return null; // superseded
+                return decoded;
+            } catch (e) {
+                console.error("Error loading/decoding masker:", e);
+                if (myToken === maskerLoadingToken) showMaskerError();
+                return null;
+            }
+        }
+
+        function stopMaskerBufferSource() {
+            if (!maskerBufferSource) return;
+            try { maskerBufferSource.stop(); } catch (_) {}
+            try { maskerBufferSource.disconnect(); } catch (_) {}
+            maskerBufferSource = null;
+        }
+
+        function startMaskerFromBuffer(buffer, randomizeStart = true) {
+            if (!isPlaying) return;
+            if (!audioContext || !maskerGain) return;
+            if (!buffer) return;
+
+            stopMaskerBufferSource();
+
+            const src = audioContext.createBufferSource();
+            src.buffer = buffer;
+            src.loop = true;
+
+            // Set precise loop points to avoid M4A encoder padding
+            const loopPoints = MASKER_LOOP_POINTS[currentMaskerName];
+            if (loopPoints) {
+                src.loopStart = loopPoints.loopStart;
+                src.loopEnd = loopPoints.loopEnd;
+            } else {
+                // Fallback: loop entire buffer (will include padding artifacts)
+                src.loopStart = 0;
+                src.loopEnd = buffer.duration;
+            }
+
+            src.connect(maskerGain);
+
+            let offset = 0;
+            if (randomizeStart) offset = computeRandomStartOffsetSeconds(buffer, currentMaskerName);
+
+            // Always fade in on start (initial or after stop/change)
+            fadeInMaskerFromSilence();
+
+            try {
+                // Start at offset and allow looping between loopStart/loopEnd.
+                src.start(0, offset);
+                maskerBufferSource = src;
+            } catch (e) {
+                console.error("Error starting masker BufferSource:", e);
+                showMaskerError();
+            }
+        }
+
+        /**
+         * Desired masker behavior implemented:
+         *
+         * When audio is stopped:
+         * - selecting a masker attempts to load it; if fail => show error
+         * - switching to "No Masker" clears error
+         * - audio does not play
+         *
+         * When audio is playing:
+         * - selecting a masker plays from random location and fades in 1.5s
+         * - selecting "No Masker" stops masker playback
+         */
+        async function handleMaskerChange() {
+            const selectedMasker = maskerSelect.value;
+
+            clearMaskerError();
+
+            // Stop any existing buffer source; we do not preserve position in the buffer model.
+            stopMaskerBufferSource();
+
+            if (selectedMasker === 'No Masker') {
+                currentMaskerName = 'No Masker';
+                maskerBuffer = null;
+                clearMaskerError();
+                return;
+            }
+
+            const changingToDifferent = (selectedMasker !== currentMaskerName);
+            currentMaskerName = selectedMasker;
+
+            // If we don't have an AudioContext yet, only do a "meaningful load attempt" via HTMLAudio
+            // so missing-file errors still surface while stopped (matches existing UX).
+            if (!audioContext) {
+                ensureMaskerAudioElement();
+                stopMaskerPlaybackPreservePosition();
+                maskerAudioEl.src = maskerFilenameFromSelectValue(selectedMasker);
+
+                const token = Symbol('masker-load-token');
+                maskerAudioEl._loadToken = token;
+
+                const cleanup = () => {
+                    maskerAudioEl.removeEventListener('loadedmetadata', onLoadedMetadata);
+                    maskerAudioEl.removeEventListener('canplaythrough', onCanPlayThrough);
+                    maskerAudioEl.removeEventListener('error', onErrorOnce);
+                };
+
+                const onErrorOnce = () => {
+                    if (maskerAudioEl._loadToken !== token) return;
+                    cleanup();
+                    showMaskerError();
+                };
+
+                const onLoadedMetadata = () => {
+                    if (maskerAudioEl._loadToken !== token) return;
+                    // do not play while stopped
+                };
+
+                const onCanPlayThrough = () => {
+                    if (maskerAudioEl._loadToken !== token) return;
+                    clearMaskerError();
+                    cleanup();
+                };
+
+                maskerAudioEl.addEventListener('error', onErrorOnce, { once: true });
+                maskerAudioEl.addEventListener('loadedmetadata', onLoadedMetadata, { once: true });
+                maskerAudioEl.addEventListener('canplaythrough', onCanPlayThrough, { once: true });
+                maskerAudioEl.load();
+                return;
+            }
+
+            // With AudioContext: load/decode to buffer and start if playing.
+            maskerBuffer = await loadMaskerBufferForName(currentMaskerName);
+
+            // If stopped by the time load finished, do not start.
+            if (!isPlaying) return;
+
+            if (!maskerBuffer) {
+                showMaskerError();
+                return;
+            }
+
+            // Every start uses random position + fade-in
+            // (changingToDifferent is irrelevant now; randomize always when starting).
+            startMaskerFromBuffer(maskerBuffer, true);
         }
 
         function fadeInMaskerFromSilence() {
@@ -579,102 +786,6 @@
             const now = audioContext.currentTime;
             maskerGain.gain.cancelScheduledValues(now);
             maskerGain.gain.setValueAtTime(volumePercentToGain(maskerVolume, 0.60), now);
-        }
-
-        /**
-         * Desired masker behavior implemented:
-         *
-         * When audio is stopped:
-         * - selecting a masker attempts to load it; if fail => show error
-         * - switching to "No Masker" clears error
-         * - audio does not play; if it was already playing, its position is preserved
-         * - switching maskers resets to a random position (preselected even while stopped)
-         *
-         * When audio is playing:
-         * - selecting a masker plays from random location and fades in 1.5s
-         * - selecting "No Masker" stops masker playback
-         */
-        function handleMaskerChange() {
-            const selectedMasker = maskerSelect.value;
-
-            // Clear error on any user change; we'll re-show on failure
-            clearMaskerError();
-
-            ensureMaskerAudioElement();
-
-            // Stop masker playback (preserve position unless we are switching to a new masker)
-            stopMaskerPlaybackPreservePosition();
-
-            // "No Masker" => nothing plays
-            if (selectedMasker === 'No Masker') {
-                currentMaskerName = 'No Masker';
-                clearMaskerError();
-                return;
-            }
-
-            // If switching to a different masker, reset to random position in the new file
-            const changingToDifferent = (selectedMasker !== currentMaskerName);
-            currentMaskerName = selectedMasker;
-
-            // Point at file and try to load it
-            maskerAudioEl.src = maskerFilenameFromSelectValue(selectedMasker);
-
-            // Attach one-time listeners for this selection attempt
-            const token = Symbol('masker-load-token');
-            maskerAudioEl._loadToken = token;
-
-            const cleanup = () => {
-                maskerAudioEl.removeEventListener('loadedmetadata', onLoadedMetadata);
-                maskerAudioEl.removeEventListener('canplaythrough', onCanPlayThrough);
-                maskerAudioEl.removeEventListener('error', onErrorOnce);
-            };
-
-            const onErrorOnce = () => {
-                if (maskerAudioEl._loadToken !== token) return;
-                cleanup();
-                showMaskerError();
-            };
-
-            const onLoadedMetadata = () => {
-                if (maskerAudioEl._loadToken !== token) return;
-
-                // Your requirement: switching maskers resets audio to a random position
-                if (changingToDifferent) {
-                    randomizeMaskerPositionIfPossible();
-                }
-
-                // If stopped, we don't play; we just did a meaningful load attempt.
-                if (!isPlaying) return;
-
-                // If playing, attempt playback after metadata is ready.
-                ensureMaskerSourceNode();
-                fadeInMaskerFromSilence();
-
-                maskerAudioEl.play().catch(err => {
-                    console.error("Error playing masker audio:", err);
-                    showMaskerError();
-                });
-            };
-
-            const onCanPlayThrough = () => {
-                if (maskerAudioEl._loadToken !== token) return;
-                // If we got this far, the file is definitely usable; clear any lingering error.
-                clearMaskerError();
-                // Leave listeners; loadedmetadata may still fire, but we can clean up once both have fired.
-                // We'll just clean up here to avoid buildup.
-                cleanup();
-            };
-
-            maskerAudioEl.addEventListener('error', onErrorOnce, { once: true });
-            maskerAudioEl.addEventListener('loadedmetadata', onLoadedMetadata);
-            maskerAudioEl.addEventListener('canplaythrough', onCanPlayThrough, { once: true });
-
-            maskerAudioEl.load();
-
-            // If already playing and metadata is cached (rare), start immediately
-            if (isPlaying && Number.isFinite(maskerAudioEl.duration) && maskerAudioEl.duration > 0) {
-                onLoadedMetadata();
-            }
         }
 
         function updateOscillators(useRamp = false) {
@@ -783,26 +894,21 @@
             toggleButton.classList.add('playing');
 
             // If a masker is selected, start it (random position + fade-in).
-            // If audio element exists, we also need to create the source node now.
-            ensureMaskerAudioElement();
-            ensureMaskerSourceNode();
-
-            // If "No Masker" selected, this will just stop/clear; otherwise it will play.
             handleMaskerChange();
         }
 
         function stopAudio() {
             if (!isPlaying) return;
 
-            // Stop masker playback but preserve its position (your requirement)
-            stopMaskerPlaybackPreservePosition();
+            // Stop masker immediately; since we randomize on start/change, we don't preserve position
+            stopMaskerBufferSource();
+            maskerBuffer = null;
 
             if (audioContext) {
                 audioContext.close().then(() => { audioContext = null; }).catch(() => { audioContext = null; });
             }
 
-            // When the AudioContext is closed, the old MediaElementSourceNode becomes invalid.
-            // Reset it; we'll recreate it next time startAudio() is pressed.
+            // Old MediaElementSourceNode is no longer used for playback; keep original cleanup
             maskerSourceNode = null;
 
             isPlaying = false;
