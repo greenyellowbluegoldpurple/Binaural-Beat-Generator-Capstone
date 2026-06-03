@@ -246,6 +246,7 @@
                 <div class="control-group">
                     <select id="maskerSelect">
                         <option>No Masker</option>
+                        <option>White Noise</option>
                         <option>Pink Noise</option>
                         <option>Brown Noise</option>
                         <option>Waterfall</option>
@@ -293,22 +294,15 @@
     <button id="toggleAudio">Start Audio</button>
 
     <script>
-        let audioContext;
+        // === Audio context / nodes (kept alive; use suspend/resume) ===
+        let audioContext = null;
 
-        let oscillatorLeft, oscillatorRight;
-        let binauralGainLeft, binauralGainRight;
-        let binauralGain; // controls overall binaural beat volume
-        let maskerGain;   // controls masker volume
-        let masterGain;   // controls total output volume
-        let pannerLeft, pannerRight;
-
-        // Masker elements/nodes (reused; do NOT recreate MediaElementSource per selection)
-        let maskerAudioEl = null;
-        let maskerSourceNode = null;
-
-        // Masker selection/load state
-        let currentMaskerName = 'No Masker';
-        let currentMaskerObjectURL = null;
+        let oscillatorLeft = null, oscillatorRight = null;
+        let binauralGainLeft = null, binauralGainRight = null;
+        let binauralGain = null; // controls overall binaural beat volume
+        let maskerGain = null;   // controls masker volume
+        let masterGain = null;   // controls total output volume
+        let pannerLeft = null, pannerRight = null;
 
         let isPlaying = false;
 
@@ -326,14 +320,27 @@
         const RELEASE_RAMP_SECONDS = 0.03;   // quick final settle on release/enter
         const INPUT_EPSILON = 1e-12;
 
-        // Masker behavior params
+        // Masker crossfade loop settings
+        const MASKER_CROSSFADE_SECONDS = 2.0;
         const MASKER_START_SAFETY_SECONDS = 0.25; // avoid starting right at 0 or end
+        const MASKER_SCHED_AHEAD_SECONDS = 6.0;   // scheduling window for future segments
 
         // rAF throttle state
         let rafPending = false;
         let pendingMasterGainValue = null;
         let pendingBinauralGainValue = null;
         let pendingMaskerGainValue = null;
+
+        // === Masker selection/cache state ===
+        let currentMaskerName = 'No Masker';
+        let maskerLoadingToken = 0;
+
+        // Cache decoded buffers by name for smooth switching after first load
+        const maskerBufferCache = new Map(); // name -> AudioBuffer
+
+        // Crossfade-loop runtime state
+        let maskerLoopState = null; // { name, buffer, segDuration, xfade, period, nextStartTime, nextOffset, active, sources:Set }
+        let maskerSchedulerTimer = null;
 
         const carrierSlider = document.getElementById('carrierSlider');
         const carrierInput = document.getElementById('carrierInput');
@@ -376,7 +383,6 @@
 
         function scheduleGainTarget(param, target, timeConstant = DRAG_TIME_CONSTANT) {
             const now = audioContext.currentTime;
-            // Ensure stable behavior even if param currently at 0
             if (param.value <= 0) param.setValueAtTime(GAIN_FLOOR, now);
             param.setTargetAtTime(clampGainFloor(target), now + INPUT_EPSILON, timeConstant);
         }
@@ -454,41 +460,40 @@
 
         function applyMasterGainDrag() {
             if (!isPlaying) return;
-            const target = volumePercentToGain(masterVolume, 1.0);
-            pendingMasterGainValue = target;
+            pendingMasterGainValue = volumePercentToGain(masterVolume, 1.0);
             requestGainRaf();
         }
 
         function applyBinauralGainDrag() {
             if (!isPlaying) return;
-            const target = volumePercentToGain(binauralVolume, 0.35);
-            pendingBinauralGainValue = target;
+            // lowered from 0.35 to 0.28
+            pendingBinauralGainValue = volumePercentToGain(binauralVolume, 0.28);
             requestGainRaf();
         }
 
         function applyMaskerGainDrag() {
             if (!isPlaying) return;
-            const target = volumePercentToGain(maskerVolume, 0.60);
-            pendingMaskerGainValue = target;
+            // raised from 0.60 to 0.72
+            pendingMaskerGainValue = volumePercentToGain(maskerVolume, 0.72);
             requestGainRaf();
         }
 
         function applyMasterGainRelease() {
             if (!isPlaying) return;
-            const target = volumePercentToGain(masterVolume, 1.0);
-            scheduleGainRelease(masterGain.gain, target, RELEASE_RAMP_SECONDS);
+            scheduleGainRelease(masterGain.gain, volumePercentToGain(masterVolume, 1.0), RELEASE_RAMP_SECONDS);
         }
 
         function applyBinauralGainRelease() {
             if (!isPlaying) return;
-            const target = volumePercentToGain(binauralVolume, 0.35);
-            scheduleGainRelease(binauralGain.gain, target, RELEASE_RAMP_SECONDS);
+            // lowered from 0.35 to 0.28
+            scheduleGainRelease(binauralGain.gain, volumePercentToGain(binauralVolume, 0.28), RELEASE_RAMP_SECONDS);
         }
 
+        // Masker volume changes while playing (no special xfade needed; the loop xfade is separate)
         function applyMaskerGainRelease() {
             if (!isPlaying) return;
-            const target = volumePercentToGain(maskerVolume, 0.60);
-            scheduleGainRelease(maskerGain.gain, target, RELEASE_RAMP_SECONDS);
+            // raised from 0.60 to 0.72
+            scheduleGainRelease(maskerGain.gain, volumePercentToGain(maskerVolume, 0.72), RELEASE_RAMP_SECONDS);
         }
 
         function safeRampFrequency(param, value, rampSeconds = 0.01) {
@@ -497,229 +502,6 @@
             param.cancelScheduledValues(now);
             param.setValueAtTime(Math.max(0.001, param.value), now);
             param.exponentialRampToValueAtTime(v, now + rampSeconds);
-        }
-
-        function maskerFilenameFromSelectValue(selectValue) {
-            return selectValue + '.m4a';
-        }
-
-        function clearMaskerError() {
-            maskerStatusMessage.style.display = 'none';
-        }
-
-        function showMaskerError() {
-            maskerStatusMessage.style.display = 'inline';
-        }
-
-        function ensureMaskerAudioElement() {
-            if (maskerAudioEl) return;
-
-            maskerAudioEl = new Audio();
-            maskerAudioEl.loop = true;
-            maskerAudioEl.crossOrigin = "anonymous";
-
-            maskerAudioEl.addEventListener('error', () => {
-                showMaskerError();
-            });
-        }
-
-        function ensureMaskerSourceNode() {
-            if (!audioContext) return;
-            if (!maskerAudioEl) return;
-            if (maskerSourceNode) return;
-
-            try {
-                maskerSourceNode = audioContext.createMediaElementSource(maskerAudioEl);
-                maskerSourceNode.connect(maskerGain);
-            } catch (e) {
-                console.error("Masker routing error:", e);
-                showMaskerError();
-            }
-        }
-
-        function stopMaskerPlaybackPreservePosition() {
-            if (!maskerAudioEl) return;
-            try { maskerAudioEl.pause(); } catch (_) {}
-        }
-
-        // === M4A padding avoidance / loop points (hardcoded) ===
-        let maskerLoadingToken = 0;
-
-        const MASKER_LOOP_POINTS = {
-          'Pink Noise': { loopStart: 0.000000, loopEnd: 100.000000 },
-          'Brown Noise': { loopStart: 0.000000, loopEnd: 100.000000 },
-          'Waterfall': { loopStart: 0.000000, loopEnd: 100.000000 },
-          'Ocean Surf': { loopStart: 0.021229, loopEnd: 1021.021542 },
-          'Meadow': { loopStart: 0.000000, loopEnd: 100.000000 }
-        };
-
-        function computeRandomStartOffsetSeconds(buffer, maskerName) {
-            if (!buffer || !Number.isFinite(buffer.duration) || buffer.duration <= 0) {
-                console.error("Invalid buffer for random start calculation");
-                return 0;
-            }
-
-            const loopPoints = MASKER_LOOP_POINTS[maskerName];
-
-            if (!loopPoints) {
-                console.warn(`No loop points defined for "${maskerName}", using default behavior`);
-                const safety = Math.min(MASKER_START_SAFETY_SECONDS, buffer.duration * 0.1);
-                const minT = Math.min(safety, buffer.duration);
-                const maxT = Math.max(buffer.duration - safety, 0);
-                return (maxT > minT) ? (minT + Math.random() * (maxT - minT)) : 0;
-            }
-
-            const loopStart = loopPoints.loopStart;
-            const loopEnd = loopPoints.loopEnd;
-
-            if (!Number.isFinite(loopStart) || !Number.isFinite(loopEnd)) return 0;
-            if (loopEnd <= loopStart) return loopStart;
-            if (loopEnd > buffer.duration) return loopStart;
-
-            return loopStart + Math.random() * (loopEnd - loopStart);
-        }
-
-        // === Masker playback uses decoded buffer + precise loop points ===
-        let maskerBuffer = null;
-        let maskerBufferSource = null;
-
-        async function loadMaskerBufferForName(maskerName) {
-            const myToken = ++maskerLoadingToken;
-            const filename = maskerFilenameFromSelectValue(maskerName);
-
-            try {
-                const resp = await fetch(filename);
-                if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${filename}`);
-
-                const arr = await resp.arrayBuffer();
-
-                const decoded = await new Promise((resolve, reject) => {
-                    const p = audioContext.decodeAudioData(arr, resolve, reject);
-                    if (p && typeof p.then === 'function') p.then(resolve).catch(reject);
-                });
-
-                if (myToken !== maskerLoadingToken) return null;
-                return decoded;
-            } catch (e) {
-                console.error("Error loading/decoding masker:", e);
-                if (myToken === maskerLoadingToken) showMaskerError();
-                return null;
-            }
-        }
-
-        function stopMaskerBufferSource() {
-            if (!maskerBufferSource) return;
-            try { maskerBufferSource.stop(); } catch (_) {}
-            try { maskerBufferSource.disconnect(); } catch (_) {}
-            maskerBufferSource = null;
-        }
-
-        function startMaskerFromBuffer(buffer, randomizeStart = true) {
-            if (!isPlaying) return;
-            if (!audioContext || !maskerGain) return;
-            if (!buffer) return;
-
-            stopMaskerBufferSource();
-
-            const src = audioContext.createBufferSource();
-            src.buffer = buffer;
-            src.loop = true;
-
-            const loopPoints = MASKER_LOOP_POINTS[currentMaskerName];
-            if (loopPoints) {
-                src.loopStart = loopPoints.loopStart;
-                src.loopEnd = loopPoints.loopEnd;
-            } else {
-                src.loopStart = 0;
-                src.loopEnd = buffer.duration;
-            }
-
-            src.connect(maskerGain);
-
-            let offset = 0;
-            if (randomizeStart) offset = computeRandomStartOffsetSeconds(buffer, currentMaskerName);
-
-            // IMPORTANT CHANGE: no fade-in on start; ensure maskerGain is at the current target immediately.
-            applyMaskerGainImmediateToCurrentVolume();
-
-            try {
-                src.start(0, offset);
-                maskerBufferSource = src;
-            } catch (e) {
-                console.error("Error starting masker BufferSource:", e);
-                showMaskerError();
-            }
-        }
-
-        async function handleMaskerChange() {
-            const selectedMasker = maskerSelect.value;
-
-            clearMaskerError();
-            stopMaskerBufferSource();
-
-            if (selectedMasker === 'No Masker') {
-                currentMaskerName = 'No Masker';
-                maskerBuffer = null;
-                clearMaskerError();
-                return;
-            }
-
-            currentMaskerName = selectedMasker;
-
-            if (!audioContext) {
-                ensureMaskerAudioElement();
-                stopMaskerPlaybackPreservePosition();
-                maskerAudioEl.src = maskerFilenameFromSelectValue(selectedMasker);
-
-                const token = Symbol('masker-load-token');
-                maskerAudioEl._loadToken = token;
-
-                const cleanup = () => {
-                    maskerAudioEl.removeEventListener('loadedmetadata', onLoadedMetadata);
-                    maskerAudioEl.removeEventListener('canplaythrough', onCanPlayThrough);
-                    maskerAudioEl.removeEventListener('error', onErrorOnce);
-                };
-
-                const onErrorOnce = () => {
-                    if (maskerAudioEl._loadToken !== token) return;
-                    cleanup();
-                    showMaskerError();
-                };
-
-                const onLoadedMetadata = () => {
-                    if (maskerAudioEl._loadToken !== token) return;
-                };
-
-                const onCanPlayThrough = () => {
-                    if (maskerAudioEl._loadToken !== token) return;
-                    clearMaskerError();
-                    cleanup();
-                };
-
-                maskerAudioEl.addEventListener('error', onErrorOnce, { once: true });
-                maskerAudioEl.addEventListener('loadedmetadata', onLoadedMetadata, { once: true });
-                maskerAudioEl.addEventListener('canplaythrough', onCanPlayThrough, { once: true });
-                maskerAudioEl.load();
-                return;
-            }
-
-            maskerBuffer = await loadMaskerBufferForName(currentMaskerName);
-
-            if (!isPlaying) return;
-
-            if (!maskerBuffer) {
-                showMaskerError();
-                return;
-            }
-
-            startMaskerFromBuffer(maskerBuffer, true);
-        }
-
-        function applyMaskerGainImmediateToCurrentVolume() {
-            if (!audioContext || !maskerGain) return;
-            const now = audioContext.currentTime;
-            maskerGain.gain.cancelScheduledValues(now);
-            maskerGain.gain.setValueAtTime(volumePercentToGain(maskerVolume, 0.60), now);
         }
 
         function updateOscillators(useRamp = false) {
@@ -738,52 +520,232 @@
             }
         }
 
-        function setInitialGainsNoRamp() {
+        function setCurrentGainsImmediately() {
             const now = audioContext.currentTime;
-            masterGain.gain.setValueAtTime(volumePercentToGain(masterVolume, 1.0), now);
-            binauralGain.gain.setValueAtTime(volumePercentToGain(binauralVolume, 0.35), now);
+            masterGain.gain.cancelScheduledValues(now);
+            binauralGain.gain.cancelScheduledValues(now);
+            maskerGain.gain.cancelScheduledValues(now);
 
-            // IMPORTANT CHANGE: no fade-in. Set masker gain immediately to current volume.
-            maskerGain.gain.setValueAtTime(volumePercentToGain(maskerVolume, 0.60), now);
+            masterGain.gain.setValueAtTime(volumePercentToGain(masterVolume, 1.0), now);
+            // lowered from 0.35 to 0.28
+            binauralGain.gain.setValueAtTime(volumePercentToGain(binauralVolume, 0.28), now);
+            // raised from 0.60 to 0.72
+            maskerGain.gain.setValueAtTime(volumePercentToGain(maskerVolume, 0.72), now);
         }
 
-        carrierSlider.addEventListener('input', (e) => updateCarrierFrequency(e.target.value, true));
-        carrierEnter.addEventListener('click', () => updateCarrierFrequency(carrierInput.value, false));
-        carrierInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') updateCarrierFrequency(carrierInput.value, false); });
+        function maskerFilenameFromSelectValue(selectValue) {
+            return selectValue + '.m4a';
+        }
 
-        beatSlider.addEventListener('input', (e) => updateBeatFrequency(e.target.value, true));
-        beatEnter.addEventListener('click', () => updateBeatFrequency(beatInput.value, false));
-        beatInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') updateBeatFrequency(beatInput.value, false); });
+        function clearMaskerError() {
+            maskerStatusMessage.style.display = 'none';
+        }
 
-        // MASTER VOLUME: drag (input) + release (change) + enter
-        masterVolumeSlider.addEventListener('input', (e) => { updateMasterVolumeUI(e.target.value); applyMasterGainDrag(); });
-        masterVolumeSlider.addEventListener('change', () => { applyMasterGainRelease(); });
-        masterVolumeEnter.addEventListener('click', () => { updateMasterVolumeUI(masterVolumeInput.value); applyMasterGainRelease(); });
-        masterVolumeInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') { updateMasterVolumeUI(masterVolumeInput.value); applyMasterGainRelease(); } });
+        function showMaskerError() {
+            maskerStatusMessage.style.display = 'inline';
+        }
 
-        // BINAURAL VOLUME: drag (input) + release (change) + enter
-        binauralVolumeSlider.addEventListener('input', (e) => { updateBinauralVolumeUI(e.target.value); applyBinauralGainDrag(); });
-        binauralVolumeSlider.addEventListener('change', () => { applyBinauralGainRelease(); });
-        binauralVolumeEnter.addEventListener('click', () => { updateBinauralVolumeUI(binauralVolumeInput.value); applyBinauralGainRelease(); });
-        binauralVolumeInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') { updateBinauralVolumeUI(binauralVolumeInput.value); applyBinauralGainRelease(); } });
+        function computeRandomStartOffsetSeconds(buffer) {
+            if (!buffer || !Number.isFinite(buffer.duration) || buffer.duration <= 0) return 0;
+            const safety = Math.min(MASKER_START_SAFETY_SECONDS, buffer.duration * 0.1);
+            const minT = Math.min(safety, buffer.duration);
+            const maxT = Math.max(buffer.duration - safety, 0);
+            return (maxT > minT) ? (minT + Math.random() * (maxT - minT)) : 0;
+        }
 
-        // MASKER VOLUME: drag (input) + release (change) + enter
-        maskerSelect.addEventListener('change', handleMaskerChange);
-        maskerVolumeSlider.addEventListener('input', (e) => { updateMaskerVolumeUI(e.target.value); applyMaskerGainDrag(); });
-        maskerVolumeSlider.addEventListener('change', () => { applyMaskerGainRelease(); });
-        maskerVolumeEnter.addEventListener('click', () => {
-            updateMaskerVolumeUI(maskerVolumeInput.value);
-            if (isPlaying) applyMaskerGainRelease();
-        });
-        maskerVolumeInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                updateMaskerVolumeUI(maskerVolumeInput.value);
-                if (isPlaying) applyMaskerGainRelease();
+        function stopMaskerLoop() {
+            if (maskerSchedulerTimer) {
+                clearInterval(maskerSchedulerTimer);
+                maskerSchedulerTimer = null;
             }
-        });
 
-        function startAudio() {
-            if (audioContext && audioContext.state === 'running') return;
+            if (!maskerLoopState) return;
+
+            for (const node of maskerLoopState.sources) {
+                try { node.src.stop(); } catch (_) {}
+                try { node.src.disconnect(); } catch (_) {}
+                try { node.g.disconnect(); } catch (_) {}
+            }
+
+            maskerLoopState = null;
+        }
+
+        function createMaskerSegmentSource(buffer, startTime, offsetSeconds, durationSeconds, fadeIn, fadeOut) {
+            const src = audioContext.createBufferSource();
+            src.buffer = buffer;
+            src.loop = false;
+
+            const g = audioContext.createGain();
+            g.gain.setValueAtTime(GAIN_FLOOR, startTime);
+
+            src.connect(g).connect(maskerGain);
+
+            // Schedule fades (use equal-power-ish curve via cosine approximation using setValueCurveAtTime)
+            // For simplicity and wide compatibility, use linear ramps; at 2s it's very smooth in practice.
+            g.gain.setValueAtTime(GAIN_FLOOR, startTime);
+            g.gain.linearRampToValueAtTime(1.0, startTime + fadeIn);
+
+            const endTime = startTime + durationSeconds;
+            g.gain.setValueAtTime(1.0, endTime - fadeOut);
+            g.gain.linearRampToValueAtTime(GAIN_FLOOR, endTime);
+
+            // Start and stop
+            src.start(startTime, offsetSeconds, durationSeconds);
+            src.stop(endTime + 0.05);
+
+            return { src, g, startTime, endTime };
+        }
+
+        function ensureMaskerSchedulerRunning() {
+            if (maskerSchedulerTimer) return;
+            // Lightweight scheduler; schedules slightly ahead to keep timing solid.
+            maskerSchedulerTimer = setInterval(() => {
+                if (!isPlaying || !audioContext || !maskerLoopState) return;
+
+                const now = audioContext.currentTime;
+                const horizon = now + MASKER_SCHED_AHEAD_SECONDS;
+
+                while (maskerLoopState.nextStartTime <= horizon) {
+                    const seg = createMaskerSegmentSource(
+                        maskerLoopState.buffer,
+                        maskerLoopState.nextStartTime,
+                        maskerLoopState.nextOffset,
+                        maskerLoopState.segDuration,
+                        maskerLoopState.xfade,
+                        maskerLoopState.xfade
+                    );
+
+                    maskerLoopState.sources.add(seg);
+
+                    // cleanup after segment ends
+                    seg.src.onended = () => {
+                        // onended can fire after stop; ensure node removed
+                        maskerLoopState?.sources?.delete(seg);
+                        try { seg.src.disconnect(); } catch (_) {}
+                        try { seg.g.disconnect(); } catch (_) {}
+                    };
+
+                    // Next segment: jump to loopStart of the buffer (0), and schedule period later
+                    maskerLoopState.nextStartTime += maskerLoopState.period;
+                    maskerLoopState.nextOffset = 0.0;
+                }
+            }, 200);
+        }
+
+        function startMaskerCrossfadeLoopFromBuffer(buffer, randomizeStart = true) {
+            stopMaskerLoop();
+            if (!isPlaying || !audioContext || !maskerGain) return;
+            if (!buffer) return;
+
+            const xfade = Math.min(MASKER_CROSSFADE_SECONDS, Math.max(0.01, buffer.duration / 4));
+            const segDuration = buffer.duration;
+            const period = segDuration - xfade;
+
+            if (!(period > 0)) {
+                console.warn("Masker buffer too short for requested crossfade; falling back to no masker.");
+                return;
+            }
+
+            const firstOffset = randomizeStart ? computeRandomStartOffsetSeconds(buffer) : 0.0;
+
+            // Align so that the first segment plays from firstOffset to end, then subsequent segments are full-length from 0.
+            // We implement this by making the first segment shorter if offset > 0.
+            const firstSegDuration = Math.max(0.01, segDuration - firstOffset);
+            const firstPeriod = firstSegDuration - xfade;
+
+            const t0 = audioContext.currentTime + 0.03;
+
+            maskerLoopState = {
+                name: currentMaskerName,
+                buffer,
+                segDuration,
+                xfade,
+                period,
+                nextStartTime: t0,
+                nextOffset: firstOffset,
+                sources: new Set()
+            };
+
+            // Schedule first segment immediately
+            const firstSeg = createMaskerSegmentSource(
+                buffer,
+                t0,
+                firstOffset,
+                firstSegDuration,
+                xfade,
+                xfade
+            );
+
+            maskerLoopState.sources.add(firstSeg);
+            firstSeg.src.onended = () => {
+                maskerLoopState?.sources?.delete(firstSeg);
+                try { firstSeg.src.disconnect(); } catch (_) {}
+                try { firstSeg.g.disconnect(); } catch (_) {}
+            };
+
+            // Set nextStartTime based on first segment's period, then subsequent segments use normal period
+            maskerLoopState.nextStartTime = t0 + Math.max(0.01, firstPeriod);
+            maskerLoopState.nextOffset = 0.0;
+
+            ensureMaskerSchedulerRunning();
+        }
+
+        async function loadMaskerBufferForName(maskerName) {
+            if (maskerBufferCache.has(maskerName)) return maskerBufferCache.get(maskerName);
+
+            const myToken = ++maskerLoadingToken;
+            const filename = maskerFilenameFromSelectValue(maskerName);
+
+            try {
+                const resp = await fetch(filename);
+                if (!resp.ok) throw new Error(`HTTP $${resp.status} for $${filename}`);
+                const arr = await resp.arrayBuffer();
+
+                const decoded = await new Promise((resolve, reject) => {
+                    const p = audioContext.decodeAudioData(arr, resolve, reject);
+                    if (p && typeof p.then === 'function') p.then(resolve).catch(reject);
+                });
+
+                if (myToken !== maskerLoadingToken) return null;
+
+                maskerBufferCache.set(maskerName, decoded);
+                return decoded;
+            } catch (e) {
+                console.error("Error loading/decoding masker:", e);
+                if (myToken === maskerLoadingToken) showMaskerError();
+                return null;
+            }
+        }
+
+        async function handleMaskerChange() {
+            const selectedMasker = maskerSelect.value;
+
+            clearMaskerError();
+            stopMaskerLoop();
+
+            if (selectedMasker === 'No Masker') {
+                currentMaskerName = 'No Masker';
+                return;
+            }
+
+            currentMaskerName = selectedMasker;
+
+            // If not playing, we can’t decode without an AudioContext; load on first Start.
+            if (!audioContext) return;
+
+            const buffer = await loadMaskerBufferForName(currentMaskerName);
+            if (!buffer) {
+                showMaskerError();
+                return;
+            }
+
+            if (isPlaying) {
+                startMaskerCrossfadeLoopFromBuffer(buffer, true);
+            }
+        }
+
+        function ensureAudioGraph() {
+            if (audioContext) return;
 
             audioContext = new (window.AudioContext || window.webkitAudioContext)();
 
@@ -813,32 +775,39 @@
             maskerGain.connect(masterGain);
             masterGain.connect(audioContext.destination);
 
-            // Set initial values immediately to avoid sudden jumps on start
-            setInitialGainsNoRamp();
+            setCurrentGainsImmediately();
             updateOscillators(false);
 
             oscillatorLeft.start();
             oscillatorRight.start();
 
+            // Start with context suspended until user hits "Start Audio"
+            audioContext.suspend().catch(() => {});
+        }
+
+        async function startAudio() {
+            ensureAudioGraph();
+
+            try { await audioContext.resume(); } catch (_) {}
+
             isPlaying = true;
             toggleButton.textContent = 'Stop Audio';
             toggleButton.classList.add('playing');
 
-            // If a masker is selected, start it (random position; NO fade-in).
-            handleMaskerChange();
+            setCurrentGainsImmediately();
+            updateOscillators(false);
+
+            await handleMaskerChange();
         }
 
-        function stopAudio() {
+        async function stopAudio() {
             if (!isPlaying) return;
 
-            stopMaskerBufferSource();
-            maskerBuffer = null;
+            stopMaskerLoop();
 
             if (audioContext) {
-                audioContext.close().then(() => { audioContext = null; }).catch(() => { audioContext = null; });
+                try { await audioContext.suspend(); } catch (_) {}
             }
-
-            maskerSourceNode = null;
 
             isPlaying = false;
             toggleButton.textContent = 'Start Audio';
@@ -848,6 +817,46 @@
             pendingBinauralGainValue = null;
             pendingMaskerGainValue = null;
         }
+
+        // === UI events ===
+        carrierSlider.addEventListener('input', (e) => updateCarrierFrequency(e.target.value, true));
+        carrierEnter.addEventListener('click', () => updateCarrierFrequency(carrierInput.value, false));
+        carrierInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') updateCarrierFrequency(carrierInput.value, false); });
+
+        beatSlider.addEventListener('input', (e) => updateBeatFrequency(e.target.value, true));
+        beatEnter.addEventListener('click', () => updateBeatFrequency(beatInput.value, false));
+        beatInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') updateBeatFrequency(beatInput.value, false); });
+
+        // MASTER VOLUME: drag (input) + release (change) + enter
+        masterVolumeSlider.addEventListener('input', (e) => { updateMasterVolumeUI(e.target.value); applyMasterGainDrag(); });
+        masterVolumeSlider.addEventListener('change', () => { applyMasterGainRelease(); });
+        masterVolumeEnter.addEventListener('click', () => { updateMasterVolumeUI(masterVolumeInput.value); applyMasterGainRelease(); });
+        masterVolumeInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') { updateMasterVolumeUI(masterVolumeInput.value); applyMasterGainRelease(); } });
+
+        // BINAURAL VOLUME: drag (input) + release (change) + enter
+        binauralVolumeSlider.addEventListener('input', (e) => { updateBinauralVolumeUI(e.target.value); applyBinauralGainDrag(); });
+        binauralVolumeSlider.addEventListener('change', () => { applyBinauralGainRelease(); });
+        binauralVolumeEnter.addEventListener('click', () => { updateBinauralVolumeUI(binauralVolumeInput.value); applyBinauralGainRelease(); });
+        binauralVolumeInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') { updateBinauralVolumeUI(binauralVolumeInput.value); applyBinauralGainRelease(); } });
+
+        // MASKER: selection loads+decodes (cached) once AudioContext exists; when playing, switch immediately.
+        maskerSelect.addEventListener('change', async () => {
+            await handleMaskerChange();
+        });
+
+        // MASKER VOLUME: drag (input) + release (change) + enter
+        maskerVolumeSlider.addEventListener('input', (e) => { updateMaskerVolumeUI(e.target.value); applyMaskerGainDrag(); });
+        maskerVolumeSlider.addEventListener('change', () => { applyMaskerGainRelease(); });
+        maskerVolumeEnter.addEventListener('click', () => {
+            updateMaskerVolumeUI(maskerVolumeInput.value);
+            if (isPlaying) applyMaskerGainRelease();
+        });
+        maskerVolumeInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                updateMaskerVolumeUI(maskerVolumeInput.value);
+                if (isPlaying) applyMaskerGainRelease();
+            }
+        });
 
         toggleButton.addEventListener('click', () => {
             if (isPlaying) stopAudio();
@@ -862,4 +871,4 @@
         updateMaskerVolumeUI(50);
     </script>
 </body>
-</html>
+</html
